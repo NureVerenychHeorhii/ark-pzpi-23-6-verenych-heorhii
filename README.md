@@ -1,0 +1,1 @@
+# ark-pzpi-23-6-verenych-heorhii
