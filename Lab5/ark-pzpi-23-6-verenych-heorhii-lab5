@@ -1,1 +1,201 @@
+МІНІСТЕРСТВО ОСВІТИ І НАУКИ УКРАЇНИ
+ХАРКІВСЬКИЙ НАЦІОНАЛЬНИЙ УНІВЕРСИТЕТ РАДІОЕЛЕКТРОНІКИ
 
+
+ФАКУЛЬТЕТ КОМП’ЮТЕРНИХ НАУК КАТЕДРА ПРОГРАМНОЇ ІНЖЕНЕРІЇ
+
+
+
+ЗВІТ
+до лабораторної роботи №5
+з дисципліни «Аналіз та рефакторинг коду» на тему:
+«Розгортання програмної системи та демонстрація її роботи«
+
+
+
+
+
+Виконав: ст. гр. ПЗПІ-23-6
+Веренич Георгій
+
+
+
+Перевірив: ас. кафедри ПІ
+Дашенков Дмитро Сергійович
+
+
+
+
+
+Харків 2025
+ 
+1 МЕТА ТА ЗАВДАННЯ РОБОТИ
+
+Мета роботи: Отримати практичні навички розгортання (deployment) та конфігурації серверних веб-застосунків на платформі Java. Здійснити запуск розробленого REST API на локальному сервері, налаштувати параметри підключення до віддаленої бази даних (PostgreSQL) та забезпечити інтеграцію компонентів системи. Провести комплексне тестування працездатності розгорнутого сервісу шляхом виконання HTTP-запитів.
+1.1.	Опис розгортання системи та конфігурації
+Система TravelMate API розроблена як монолітний додаток на базі фреймворку Spring Boot.
+Середовище розробки та компоненти:
+	Мова програмування: Java 17.
+	Фреймворк: Spring Boot 3.x (Spring Web, Spring Data JPA).
+	Система збірки: Apache Maven.
+	База даних: PostgreSQL (хмарна платформа Supabase).
+	Середовище виконання: Вбудований контейнер сервлетів Apache Tomcat (порт 8081).
+Конфігурація середовища: Налаштування підключення до бази даних та параметри сервера винесено у файл конфігурації src/main/resources/application.properties. Це дозволяє легко змінювати параметри без перекомпіляції коду. Основні налаштування включають URL-адресу JDBC, логін/пароль до бази даних, діалект Hibernate та налаштування DDL-auto (для автоматичного створення таблиць).
+1.2. Обґрунтування вибору технологій
+a.	Spring Boot: Обрано через швидкість розгортання, наявність вбудованого сервера (Tomcat) та автоматичну конфігурацію залежностей. Це стандарт індустрії для створення мікросервісів та REST API на Java.
+
+b.	PostgreSQL: Потужна реляційна база даних, яка забезпечує надійність (ACID), підтримку складних запитів та високу продуктивність при роботі зі зв’язаними даними (користувачі, бронювання, платежі).
+c.	Hibernate (JPA): Використовується як ORM (Object-Relational Mapping). Це дозволяє працювати з базами даних через Java-об'єкти (Entities), не пишучи вручну SQL-запити, що пришвидшує розробку та зменшує кількість помилок.
+d.	REST API (JSON): Обрано архітектурний стиль REST, оскільки він є універсальним для взаємодії з будь-якими клієнтами (веб-сайт, мобільний додаток, IoT-пристрої). Обмін даними відбувається у форматі JSON.
+ 
+2.	ФРАГМЕНТИ ПРОГРАМНОГО КОДУ
+2.1. Логіка бізнес-процесів серверної частини
+Як приклад бізнес-логіки наведено контролер обробки платежів (PaymentController). Тут реалізовано перевірку існування бронювання, автоматичне встановлення типу оплати та обробку помилок.
+@RestController
+@RequestMapping("/api/payments")
+public class PaymentController {
+
+    @Autowired
+    private PaymentRepository paymentRepository;
+    @Autowired
+    private BookingRepository bookingRepository;
+
+    @PostMapping
+    public ResponseEntity<?> create(@RequestBody Payment payment) {
+        try {
+            // Валідація вхідних даних
+            if (payment.getBooking() == null || payment.getBooking().getId() == null) {
+                return ResponseEntity.badRequest().body("Помилка: Не вказано ID бронювання");
+            }
+
+            // Пошук реального бронювання в БД
+            Long bookingId = payment.getBooking().getId();
+            Booking realBooking = bookingRepository.findById(bookingId)
+                    .orElseThrow(() -> new RuntimeException("Бронювання не знайдено"));
+
+            payment.setBooking(realBooking);
+
+            // Бізнес-логіка: встановлення значень за замовчуванням
+            if (payment.getType() == null) {
+                payment.setType("CARD");
+            }
+            if (payment.getTransactionDate() == null) {
+                payment.setTransactionDate(LocalDateTime.now());
+            }
+
+            paymentRepository.save(payment);
+            return ResponseEntity.ok("Оплата пройшла успішно! ID платежу збережено.");
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("КРИТИЧНА ПОМИЛКА: " + e.getMessage());
+        }
+    }
+}
+2.2. Логіка адміністрування серверної частини
+Адміністративні функції включають управління автопарком. Нижче наведено фрагмент CarController, який дозволяє додавати нові автомобілі в систему.
+@RestController
+@RequestMapping("/api/cars")
+public class CarController {
+
+    @Autowired
+    private CarRepository carRepository;
+
+    // Метод для додавання нового авто (Адмін-панель)
+    @PostMapping
+    public Car addCar(@RequestBody Car car) {
+        // У реальній системі тут може бути перевірка прав адміністратора
+        return carRepository.save(car);
+    }
+
+    // Отримання списку всіх авто
+    @GetMapping
+    public List<Car> getAllCars() {
+        return carRepository.findAll();
+    }
+}
+2.3. Логіка налаштування IoT клієнта та взаємодії з сервером
+Система включає модуль телеметрії. Дані про стан автомобіля (GPS, швидкість, пальне) зберігаються в базі даних та доступні через API.
+Модель даних телеметрії (CarTelemetry.java):
+@Entity
+@Table(name = "car_telemetry")
+public class CarTelemetry {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "car_id")
+    private Long carId;
+
+    private double latitude;
+    private double longitude;
+    private double speed;
+    
+    @Column(name = "fuel_level")
+    private double fuelLevel;
+    
+    private LocalDateTime timestamp;
+    // Геттери та сеттери...
+}
+Контролер для отримання даних (TelemetryController.java):
+@RestController
+@RequestMapping("/api/telemetry")
+public class TelemetryController {
+    @Autowired
+    private TelemetryRepository telemetryRepository;
+
+    @GetMapping
+    public List<CarTelemetry> getTelemetry() {
+        return telemetryRepository.findAll();
+    }
+}
+ 
+3.	ГРАФІЧНІ ІЛЮСТРАЦІЇ
+3.1. Схема взаємодії компонентів програмної системи
+Нижче наведено схему потоків даних у системі TravelMate:
+ 
+Рисунок 1 – Структура Backend частини проекту
+ 
+Опис схеми (текстом):
+	Client (Postman/Mobile) надсилає HTTP запит -> Controller (REST Layer).
+	Controller звертається до Repository (Data Access Layer).
+	Repository використовує Hibernate для запиту до Database (PostgreSQL).
+	IoT Simulator генерує дані та пише їх у БД (або надсилає на сервер), які потім доступні через API.
+3.2. Діаграма структури даних (ER-діаграма)
+Структура реляційної бази даних, спроектована для системи.
+ 
+Рисунок 2 – розгортання серверної частини БД у хмарному середовищі SUPABASE
+
+Ключові зв'язки:
+	Users -> Bookings (One-to-Many): Один користувач може мати багато бронювань.
+	Cars -> Bookings (One-to-Many): Одне авто може мати багато бронювань.
+	Bookings -> Payments (One-to-Many): Бронювання може мати історію платежів.
+	Bookings -> Reviews (One-to-Many): До бронювання прив'язується відгук.
+ 
+ТЕСТУВАННЯ ЗАПИТІВ
+ 
+Рисунок 3 – успішне виконання команди для додавання користувачів  
+Рисунок 4 – успішне виконання команди для додавання автомобілів
+ 
+Рисунок 5 – успішне виконання команди для перегляду автомобілів
+
+ 
+Рисунок 6 – успішне виконання команди для додавання бронювання
+
+ 
+Рисунок 7 – успішне виконання команди для додавання платежів
+
+
+ 
+Рисунок 8 – успішне виконання команди для отримання інформації з телеметрії
+
+ 
+Рисунок 9 – успішне виконання команди для назначення перевірки авто
+
+
+ 
+Рисунок 10 – успішне виконання команди для залишку відгуків
+ 
+ВИСНОВОК
+Виконуючи лабораторну роботу, я отримав практичний досвід розгортання та адміністрування REST API на базі Java. Було проведено повний цикл підготовки до запуску: від збірки проекту системою Maven до конфігурації параметрів ORM Hibernate для взаємодії з базою даних. Розгорнута система успішно забезпечує виконання бізнес-логіки предметної області (оренда авто), підтримує цілісність даних та обробляє запити від зовнішніх клієнтів. Інтеграційне тестування показало стабільну роботу ендпоінтів та коректну взаємодію з імітатором IoT-пристроїв.
+
+Посилання на репозиторій: https://github.com/NureVerenychHeorhii/travelmate-api/tree/main/backend
+Посилання на відеозвіт: https://youtu.be/Zq6wH6OoRCM
